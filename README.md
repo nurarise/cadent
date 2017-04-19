@@ -1,4 +1,4 @@
-# cadentwifi
+# cadent-wifi
 **wireless performance analysis tool**
 
 *This tool is used to identify the wireless performace from various spot
