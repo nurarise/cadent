@@ -13,6 +13,11 @@ CADENTINC:=$(shell find $(CADENTSDIR) -type f -name \*.h -print)
 CADENTSRC:=$(shell find $(CADENTSDIR) -type f -name \*.c -print)
 CADENTOBJ:=$(addprefix $(OUT)/,$(CADENTSRC:%.c=%.o))
 DEPS=$(CADENTINC)
+LIBS=$(shell pkg-config --libs libnl-genl-3.0)
+LIBINC=$(shell pkg-config --cflags libnl-genl-3.0)
+
+LDLIBS += $(LIBS)
+CFLAGS += $(LIBINC)
 
 all: bin
 
