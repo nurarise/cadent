@@ -71,5 +71,6 @@ int main(int argc, char *argv[])
  if (ret == -1)
     return EXIT_FAILURE;
 
+ sleep(100); //run this program for 100 sec
  return EXIT_SUCCESS;
 }

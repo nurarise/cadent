@@ -16,7 +16,7 @@ DEPS=$(CADENTINC)
 LIBS=$(shell pkg-config --libs libnl-genl-3.0)
 LIBINC=$(shell pkg-config --cflags libnl-genl-3.0)
 
-LDLIBS += $(LIBS)
+LDLIBS += $(LIBS) -lpthread
 CFLAGS += $(LIBINC)
 
 all: bin
