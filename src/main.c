@@ -3,7 +3,6 @@
 #include <unistd.h>
 
 #include "wperf.h"
-#include "report.h"
 
 static const char DEFAULT_SSID[]={"LEDE"};
 static const char DEFAULT_FILE[]={"/tmp/cadentwifi-report.txt"};
@@ -24,7 +23,7 @@ int main(int argc, char *argv[])
 {
  int opt, ret;
  const char *ssid = DEFAULT_SSID;
- const char *reportfile = DEFAULT_FILE;
+ const char *rfile = DEFAULT_FILE;
  const char *ifname = DEFAULT_IFNAME;
  int fmttype = DEFUALT_FMTTYPE;
 
@@ -34,7 +33,7 @@ int main(int argc, char *argv[])
    switch(opt)
    {
      case 'f':
-             reportfile = optarg;
+             rfile = optarg;
              break;
      case 'i':
              ifname = optarg;
@@ -65,12 +64,9 @@ int main(int argc, char *argv[])
          usage(argv[0], EXIT_FAILURE);
  }
 
- report_init(reportfile, fmttype);
-
- ret = wperf(ssid, ifname);
+ ret = wireless_perf(ssid, ifname, rfile);
  if (ret == -1)
     return EXIT_FAILURE;
 
- sleep(100); //run this program for 100 sec
  return EXIT_SUCCESS;
 }
