@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include "report.h"
 #include "wperf.h"
 
 static const char DEFAULT_SSID[]={"LEDE"};
@@ -64,7 +65,8 @@ int main(int argc, char *argv[])
          usage(argv[0], EXIT_FAILURE);
  }
 
- ret = wireless_perf(ssid, ifname, rfile);
+ report_init(rfile, fmttype);
+ ret = wireless_perf(ssid, ifname);
  if (ret == -1)
     return EXIT_FAILURE;
 

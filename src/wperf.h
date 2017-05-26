@@ -5,7 +5,6 @@
 extern "C" {
 #endif
 
-
 int wireless_perf(const char *ssid, const char *ifname);
 #ifdef __cplusplus
 }
