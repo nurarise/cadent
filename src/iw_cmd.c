@@ -11,6 +11,20 @@
 
 #define UNUSED             __attribute__((unused))
 
+/*
+* struct nl80211_ctx - netlink 802.11 context structure
+* nlsock: netlink socket descriptor
+* nl80211id: id for nl80211 interface
+* nlmsglen: netlink message length.
+* ifindex: wifi interface index
+*/
+struct nl80211_ctx {
+        struct nl_sock  *nlsock;
+        int              nl80211id;
+        int              nlmsglen;
+        uint32_t         ifindex;
+};
+
 /**
  * struct nlmsg_attribute: attributes to nla_put into the message
  *
@@ -169,3 +183,6 @@ nla_put_failure:
 out:    
         return ret;
 }
+
+
+

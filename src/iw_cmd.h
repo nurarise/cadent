@@ -41,10 +41,10 @@ struct scan_info {
 * flags:         flags to set in the GeNetlink message
 */
 struct nl80211_cmd {
-        enum nl80211_commands   nlcmd;
+        enum nl80211_commands    nlcmd;
         int (*nl_handler)(struct nl_msg *msg, void *arg);
         void                    *handler_arg;
-        int                     flags;
+        int                      flags;
 };
 
 /*
