@@ -11,20 +11,6 @@
 
 #define UNUSED             __attribute__((unused))
 
-/*
-* struct nl80211_ctx - netlink 802.11 context structure
-* nlsock: netlink socket descriptor
-* nl80211id: id for nl80211 interface
-* nlmsglen: netlink message length.
-* ifindex: wifi interface index
-*/
-struct nl80211_ctx {
-        struct nl_sock  *nlsock;
-        int              nl80211id;
-        int              nlmsglen;
-        uint32_t         ifindex;
-};
-
 /**
  * struct nlmsg_attribute: attributes to nla_put into the message
  *
@@ -71,12 +57,14 @@ int nlsocket_open(const char *ifname)
 {
 	int ret = 0;
 	int nlmsglen;
+	uint32_t ifindex;
+
 	struct nl80211_ctx *state = &gnlstate;
 
 	ifindex = if_nametoindex(ifname);
 	if (ifindex == 0 && errno)
 	{
-		fprintf(stderr, "failed to look up interface %s\n", state->ifname);
+		fprintf(stderr, "failed to look up interface %s\n", ifname);
 		return -1;
 	}
 	state->ifindex = ifindex;
@@ -184,5 +172,133 @@ out:
         return ret;
 }
 
+/**
+ * struct handler_args - arguments to resolve multicast group
+ * @group: group name to resolve
+ * @id:    ID it resolves into
+ */
+struct handler_args {
+        const char      *group;
+        int             id;
+};
 
 
+/* stolen from iw:genl.c */
+static int family_handler(struct nl_msg *msg, void *arg)
+{
+        struct handler_args *grp = arg;
+        struct nlattr *tb[CTRL_ATTR_MAX + 1];
+        struct genlmsghdr *gnlh = nlmsg_data(nlmsg_hdr(msg));
+        struct nlattr *mcgrp;
+        int rem_mcgrp;
+
+        nla_parse(tb, CTRL_ATTR_MAX, genlmsg_attrdata(gnlh, 0),
+                  genlmsg_attrlen(gnlh, 0), NULL);
+
+        if (!tb[CTRL_ATTR_MCAST_GROUPS])
+                return NL_SKIP;
+
+        nla_for_each_nested(mcgrp, tb[CTRL_ATTR_MCAST_GROUPS], rem_mcgrp) {
+                struct nlattr *tb_mcgrp[CTRL_ATTR_MCAST_GRP_MAX + 1];
+
+                nla_parse(tb_mcgrp, CTRL_ATTR_MCAST_GRP_MAX,
+                          nla_data(mcgrp), nla_len(mcgrp), NULL);
+
+                if (!tb_mcgrp[CTRL_ATTR_MCAST_GRP_NAME] ||
+                    !tb_mcgrp[CTRL_ATTR_MCAST_GRP_ID])
+                        continue;
+                if (strncmp(nla_data(tb_mcgrp[CTRL_ATTR_MCAST_GRP_NAME]),
+                            grp->group, nla_len(tb_mcgrp[CTRL_ATTR_MCAST_GRP_NAME])))
+                        continue;
+                grp->id = nla_get_u32(tb_mcgrp[CTRL_ATTR_MCAST_GRP_ID]);
+                break;
+        }
+
+        return NL_SKIP;
+}
+
+/* stolen from iw:genl.c */
+int nl_get_multicast_id(struct nl_sock *sock, const char *family, const char *group)
+{
+        struct nl_msg *msg;
+        struct nl_cb *cb;
+        int ret, ctrlid;
+        struct handler_args grp = {
+                .group = group,
+                .id = -ENOENT,
+        };
+
+        msg = nlmsg_alloc();
+        if (!msg)
+                return -ENOMEM;
+
+        cb = nl_cb_alloc(NL_CB_DEFAULT);
+        if (!cb) {
+                ret = -ENOMEM;
+                goto out_fail_cb;
+        }
+
+        ctrlid = genl_ctrl_resolve(sock, "nlctrl");
+
+        genlmsg_put(msg, 0, 0, ctrlid, 0,
+                    0, CTRL_CMD_GETFAMILY, 0);
+
+        ret = -ENOBUFS;
+        NLA_PUT_STRING(msg, CTRL_ATTR_FAMILY_NAME, family);
+
+        ret = nl_send_auto_complete(sock, msg);
+        if (ret < 0) 
+                goto out;
+
+        ret = 1;
+
+        nl_cb_err(cb, NL_CB_CUSTOM, error_handler, &ret);
+        nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, ack_handler, &ret);
+        nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, family_handler, &grp);
+
+        while (ret > 0)
+                nl_recvmsgs(sock, cb);
+
+        if (ret == 0) 
+                ret = grp.id;
+nla_put_failure:
+out:
+        nl_cb_put(cb);
+out_fail_cb:
+        nlmsg_free(msg);
+        return ret;
+}
+
+/**
+ * Allocate a GeNetlink socket ready to listen for nl80211 multicast group @grp
+ * @grp: identifier of an nl80211 multicast group (e.g. "scan")
+ */
+struct nl_sock *alloc_nl_mcast_sk(const char *grp)
+{
+        int mcid, ret;
+        struct nl_sock *sk = nl_socket_alloc();
+
+        if (!sk){
+                fprintf(stderr, "failed to allocate netlink multicast socket");
+		return NULL;
+	}
+
+        if (genl_connect(sk)){ 
+                fprintf(stderr, "failed to connect multicast socket to GeNetlink");
+		return NULL;
+	}
+
+        mcid = nl_get_multicast_id(sk, "nl80211", grp);
+        if (mcid < 0){
+                fprintf(stderr, "failed to resolve nl80211 '%s' multicast group", grp);
+		return NULL;
+	}
+
+        ret = nl_socket_add_membership(sk, mcid);
+        if (ret){
+                fprintf(stderr, "failed to join nl80211 multicast group %s", grp);
+		return NULL;
+	}
+
+        return sk;
+}

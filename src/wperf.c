@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <ctype.h>
 
 #include <pthread.h>
 
@@ -14,6 +15,7 @@
 
 #define MAX_CIRBUF_SZ      2048	//2K bytes
 #define UNUSED             __attribute__((unused))
+#define ARRAY_SIZE(arr)		sizeof(arr)/sizeof((arr)[0])
 
 /* GLOBAL VARIABLES */
 static struct nl_sock *scan_wait_sk;
@@ -32,7 +34,7 @@ struct cmsg_q {
 	  int        	front;
 	  int        	rear;
 	  int        	qlen;
-	  uint32_t	*buf;
+	  void		*buf;
 };
 
 /*
@@ -54,8 +56,19 @@ struct wireless_ctx {
 	char		*ifname;
 };
 
+/**
+ * struct wait_event - wait for arrival of a specified message
+ * @cmds:   array of GeNetlink commands (>0) to match
+ * @n_cmds: length of @cmds
+ * @cmd:    matched element of @cmds (if message arrived), else 0
+ */
+struct wait_event {
+        const uint32_t  *cmds;
+        uint8_t         n_cmds;
+        uint32_t        cmd;
+};
 
-static int msg_enqueue(struct wireless_ctx *state, const uint32_t data)
+static int msg_enqueue(struct wireless_ctx *state, const struct scan_result data)
 {
 	struct cmsg_q *msgq = state->msgq;
 
@@ -68,7 +81,7 @@ static int msg_enqueue(struct wireless_ctx *state, const uint32_t data)
 		msgq->rear = 0;
 	}
 
-	memcpy(&msgq->buf[msgq->rear], &data, sizeof(msgq->buf[0]));
+	memcpy( (struct scan_result *)msgq->buf + msgq->rear, &data, sizeof(struct scan_result));
 	msgq->rear++;
 
 #if DEBUG_LEVEL > 1
@@ -81,7 +94,7 @@ static int msg_enqueue(struct wireless_ctx *state, const uint32_t data)
 	return 0;
 }
 
-static int msg_dequeue(struct wireless_ctx *state, uint32_t *data)
+static int msg_dequeue(struct wireless_ctx *state, struct scan_result *data)
 {
 	struct cmsg_q *msgq = state->msgq;
 
@@ -95,7 +108,7 @@ static int msg_dequeue(struct wireless_ctx *state, uint32_t *data)
 		msgq->front = 0;
 	}
 
-	memcpy(data, &msgq->buf[msgq->front], sizeof(*data));
+	memcpy(data, (struct scan_result *)msgq->buf + msgq->front, sizeof(struct scan_result));
 	msgq->front++;
 #if DEBUG_LEVEL > 1
 	printf("msg_dequeue: front: %d, rear: %d, data:%d\n", msgq->front, msgq->rear, *data);
@@ -109,6 +122,23 @@ static int msg_dequeue(struct wireless_ctx *state, uint32_t *data)
  * Scan event handling
  */
 
+int ieee80211_frequency_to_channel(int freq)
+{
+        /* see 802.11-2007 17.3.8.3.2 and Annex J */
+        if (freq == 2484)
+                return 14;
+        else if (freq < 2484)
+                return (freq - 2407) / 5;
+        else if (freq >= 4910 && freq <= 4980)
+                return (freq - 4000) / 5;
+        else if (freq <= 45000) /* DMG band lower limit */
+                return (freq - 5000) / 5;
+        else if (freq >= 58320 && freq <= 64800)
+                return (freq - 56160) / 2160;
+        else
+                return 0; 
+}
+
 /* Callback event handler */
 static int wait_event(struct nl_msg *msg, void *arg)
 {
@@ -121,6 +151,11 @@ static int wait_event(struct nl_msg *msg, void *arg)
                         wait->cmd = gnlh->cmd;
         }
         return NL_SKIP;
+}
+
+static inline int no_seq_check(struct nl_msg *msg UNUSED, void *arg UNUSED)
+{
+        return NL_OK;
 }
 
 /**
@@ -144,7 +179,7 @@ static bool iw_nl80211_wait_for_scan_events(void)
         if (!scan_wait_sk)
                 scan_wait_sk = alloc_nl_mcast_sk("scan");
 
-        cb = nl_cb_alloc(IW_NL_CB_DEBUG ? NL_CB_DEBUG : NL_CB_DEFAULT);
+        cb = nl_cb_alloc(NL_CB_DEFAULT);
         if (!cb){
 		fprintf(stderr, "fatal:failed to allocate netlink callbacks");
 		return -1;
@@ -161,14 +196,38 @@ static bool iw_nl80211_wait_for_scan_events(void)
         return wait_ev.cmd == NL80211_CMD_NEW_SCAN_RESULTS;
 }
 
+void print_ssid_escaped(char *buf, const size_t buflen,
+                        const uint8_t *data, const size_t datalen)
+{
+        unsigned int i, l;
+
+        memset(buf, '\0', buflen);      
+        /* Treat zeroed-out SSIDs separately */
+        for (i = 0; i < datalen && data[i] == '\0'; i++)
+                ; 
+        if (i == datalen)
+                return; 
+
+        for (i = l= 0; i < datalen; i++) {
+                if (l + 4 >= buflen)
+                        return;
+                else if (isprint(data[i]) && data[i] != ' ' && data[i] != '\\')
+                        l += sprintf(buf + l, "%c", data[i]);
+                else if (data[i] == ' ' && i != 0 && i != datalen -1)
+                        l += sprintf(buf + l, " ");
+                else
+                        l += sprintf(buf + l, "\\x%.2x", data[i]);
+        }
+}
+
+
 /**
  * Scan result handler. Stolen from iw:scan.c
  * This also updates the scan-result statistics.
  */
 int scan_dump_handler(struct nl_msg *msg, void *arg)
 {
-        struct scan_result *sr = (struct scan_result *)arg;
-        struct scan_entry *new = calloc(1, sizeof(*new));
+        struct scan_result *new = (struct scan_result *)arg;
         struct genlmsghdr *gnlh = nlmsg_data(nlmsg_hdr(msg));
         struct nlattr *tb[NL80211_ATTR_MAX + 1];
         struct nlattr *bss[NL80211_BSS_MAX + 1];
@@ -200,10 +259,6 @@ int scan_dump_handler(struct nl_msg *msg, void *arg)
         if (!bss[NL80211_BSS_BSSID])
                 return NL_SKIP;
 
-        new = calloc(1, sizeof(*new));
-        if (!new)
-                err_sys("failed to allocate scan entry");
-
         memcpy(&new->ap_addr, nla_data(bss[NL80211_BSS_BSSID]), sizeof(new->ap_addr));
 
         if (bss[NL80211_BSS_FREQUENCY]) {
@@ -221,7 +276,7 @@ int scan_dump_handler(struct nl_msg *msg, void *arg)
 
         if (bss[NL80211_BSS_CAPABILITY]) {
                 new->bss_capa = nla_get_u16(bss[NL80211_BSS_CAPABILITY]);
-                new->has_key  = (new->bss_capa & WLAN_CAPABILITY_PRIVACY) != 0;
+                //new->has_key  = (new->bss_capa & WLAN_CAPABILITY_PRIVACY) != 0;
         }
 
         if (bss[NL80211_BSS_SEEN_MS_AGO])
@@ -254,29 +309,12 @@ int scan_dump_handler(struct nl_msg *msg, void *arg)
                 }
         }
 
-        /* Update stats */
-        new->next = sr->head;
-        sr->head  = new;
-       if (str_is_ascii(new->essid))
-                sr->max_essid_len = clamp(strlen(new->essid),
-                                          sr->max_essid_len,
-                                          IW_ESSID_MAX_SIZE);
-
-        if (new->freq > 45000)  /* 802.11ad 60GHz spectrum */
-                err_quit("FIXME: can not handle %d MHz spectrum yet", new->freq);
-        else if (new->freq >= 5000)
-                sr->num.five_gig++;
-        else if (new->freq >= 2000)
-                sr->num.two_gig++;
-        sr->num.entries += 1;
-        sr->num.open    += !new->has_key;
-
         return NL_SKIP;
 }
 
-static int iw_nl80211_scan_trigger(struct wireless_ctx *state)
+static int iw_nl80211_scan_trigger(void)
 {
-        static struct wireless_cmd cmd_trigger_scan = {
+        static struct nl80211_cmd cmd_trigger_scan = {
                 .nlcmd = NL80211_CMD_TRIGGER_SCAN,
         };
 
@@ -285,7 +323,7 @@ static int iw_nl80211_scan_trigger(struct wireless_ctx *state)
 
 static int iw_nl80211_get_scan_data(struct scan_result *sr)
 {
-        static struct cmd cmd_scan_dump = {
+        static struct nl80211_cmd cmd_scan_dump = {
                 .nlcmd     = NL80211_CMD_GET_SCAN,
                 .flags   = NLM_F_DUMP,
                 .nl_handler = scan_dump_handler
@@ -297,20 +335,20 @@ static int iw_nl80211_get_scan_data(struct scan_result *sr)
         return nl80211cmd_handle(&cmd_scan_dump);
 }
 
-static int get_scanresult(struct wireless_ctx *state, scan_result *result)
+static int get_scanresult(struct wireless_ctx *state, struct scan_result *result)
 {
 	int ret;
 
-	ret = iw_nl80211_scan_trigger(state);
+	ret = iw_nl80211_scan_trigger();
 
 	if( !ret || ret == EBUSY){
 	/* Trigger returns -EBUSY if a scan request is pending or ready. */
 		if (!iw_nl80211_wait_for_scan_events()) {
-			printf(stdout, "Waiting for scan data...");
+			printf("Waiting for scan data...");
 		} else {
 			ret = iw_nl80211_get_scan_data(result);
 			if (ret < 0) {
-				printf(stderr,"Scan failed on %s: %s", state->ifname, strerror(-ret));
+				fprintf(stderr,"Scan failed on %s: %s", state->ifname, strerror(-ret));
 				return -1;
 			}
 		}
@@ -327,31 +365,29 @@ static int get_scanresult(struct wireless_ctx *state, scan_result *result)
 static void *wperf_scanthread(void *vstate)
 {
 	struct wireless_ctx *state = vstate;
-	struct scan_result *sresult;
+	struct scan_result sresult;
 
-	sresult = malloc(sizeof(*sresult));
-	if(!sresult){
-		fprintf(stderr, "fatal: fail to allocate the memory @%s\n", __FUNCTION__);
-		exit(1); //terminate the application
-	}
 	while (1) {
-		if(get_scanresult(state, sresult)) {
+		if(get_scanresult(state, &sresult)) {
 			fprintf(stderr, "fatal:netlink error: exit the scan thread\n");
 			exit(1);
 		}
-		msg_enqueue(state, sresult->linkq); // FIXME: monitor receiver signal strength indicator
-		usleep(1000);
+		msg_enqueue(state, sresult); // FIXME: monitor receiver signal strength indicator
+		usleep(1000000); // trigger the scan for every one sec
 	}
 	return NULL;
 }
 
 static void *wperf_reportthread(void *vstate)
 {
-	struct wperf_ctx *state = vstate;
-	uint32_t data;
+	struct wireless_ctx *state = vstate;
+	struct scan_result sr;
 
 	while(1){
-		msg_dequeue(state, &data);
+		msg_dequeue(state, &sr);
+		printf("essid %s\n", sr.essid);
+		printf("signal_qual %d\n", sr.bss_signal_qual);
+		usleep(1000000);
 	}
 
 	return NULL;
@@ -365,7 +401,7 @@ static int init(struct wireless_ctx *state, const char *ssid, const char *ifname
 			.qlen = MAX_CIRBUF_SZ,
 			.buf  = NULL};
 
-	mq.buf = malloc(mq.qlen);
+	mq.buf = calloc(mq.qlen, sizeof(struct scan_result));
         if(mq.buf == NULL) 
 		return -ENOMEM;
 
