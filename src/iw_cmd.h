@@ -43,6 +43,21 @@ struct scan_result {
                                 bss_chan_usage;
 }scan_result;
 
+
+/**
+ * struct nlmsg_attribute: attributes to nla_put into the message
+ *
+ * type:       type of the attribute
+ * len:        attribute length
+ * data:       pointer to data area of length @len
+ */
+struct nlmsg_attribute {
+        int             type,
+                        len;
+        const void      *data;
+};
+
+
 /*
 *
 * struct nl80211_cmd - inspired from iw:iw.h & wavemon
@@ -56,6 +71,8 @@ struct nl80211_cmd {
         int (*nl_handler)(struct nl_msg *msg, void *arg);
         void                    *handler_arg;
         int                      flags;
+        struct nlmsg_attribute    *msg_args;
+        uint8_t                 msg_args_len;
 };
 
 /*

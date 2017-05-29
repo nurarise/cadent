@@ -11,19 +11,6 @@
 
 #define UNUSED             __attribute__((unused))
 
-/**
- * struct nlmsg_attribute: attributes to nla_put into the message
- *
- * type:       type of the attribute
- * len:        attribute length
- * data:       pointer to data area of length @len
- */
-struct nlmsg_attribute {
-        int             type,
-                        len;
-        const void      *data;
-};
-
 static struct nl80211_ctx gnlstate;
 
 static inline int error_handler(struct sockaddr_nl *nla UNUSED, struct nlmsgerr *err,
@@ -116,7 +103,7 @@ void nlsocket_destroy(void)
 
 int nl80211cmd_handle(struct nl80211_cmd *cmd)
 {
-        int ret;
+        int ret,idx;
         struct nl_cb *cb;
         struct nl_msg *msg;
 	struct nl80211_ctx *state = &gnlstate;  
@@ -142,6 +129,14 @@ int nl80211cmd_handle(struct nl80211_cmd *cmd)
 
         /* netdev identifier: interface index */
         NLA_PUT(msg, NL80211_ATTR_IFINDEX, sizeof(state->ifindex), &state->ifindex);
+
+       /* Additional attributes */
+        if (cmd->msg_args) {
+                for (idx = 0; idx < cmd->msg_args_len; idx++)
+                        NLA_PUT(msg, cmd->msg_args[idx].type,
+                                     cmd->msg_args[idx].len,
+                                     cmd->msg_args[idx].data);
+        }
 
         ret = nl_send_auto_complete(state->nlsock, msg);
         if (ret < 0)

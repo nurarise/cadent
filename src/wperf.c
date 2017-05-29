@@ -19,6 +19,8 @@
 
 /* GLOBAL VARIABLES */
 static struct nl_sock *scan_wait_sk;
+//static char gssid[IW_ESSID_MAX_SIZE+1];
+static bool foundssid = false;
 
 /**
 * struct cmsg_q:	circular message queue structure to store the rssi value
@@ -227,7 +229,8 @@ void print_ssid_escaped(char *buf, const size_t buflen,
  */
 int scan_dump_handler(struct nl_msg *msg, void *arg)
 {
-        struct scan_result *new = (struct scan_result *)arg;
+        struct scan_result temp, *result = (struct scan_result *)arg;
+        struct scan_result *new = (struct scan_result *)&temp;
         struct genlmsghdr *gnlh = nlmsg_data(nlmsg_hdr(msg));
         struct nlattr *tb[NL80211_ATTR_MAX + 1];
         struct nlattr *bss[NL80211_BSS_MAX + 1];
@@ -244,6 +247,8 @@ int scan_dump_handler(struct nl_msg *msg, void *arg)
                 [NL80211_BSS_SEEN_MS_AGO]          = { .type = NLA_U32 },
                 [NL80211_BSS_BEACON_IES]           = { },
         };
+
+	//printf("scan_dump_handler\n");
 
         nla_parse(tb, NL80211_ATTR_MAX, genlmsg_attrdata(gnlh, 0),
                   genlmsg_attrlen(gnlh, 0), NULL);
@@ -265,12 +270,14 @@ int scan_dump_handler(struct nl_msg *msg, void *arg)
                 new->freq = nla_get_u32(bss[NL80211_BSS_FREQUENCY]);
                 new->chan = ieee80211_frequency_to_channel(new->freq);
         }
-       if (bss[NL80211_BSS_SIGNAL_UNSPEC])
+       if (bss[NL80211_BSS_SIGNAL_UNSPEC]){
                 new->bss_signal_qual = nla_get_u8(bss[NL80211_BSS_SIGNAL_UNSPEC]);
-
+		printf("Signal Qual: %d\n", new->bss_signal_qual);
+	}
 
         if (bss[NL80211_BSS_SIGNAL_MBM]) {
                 int s = nla_get_u32(bss[NL80211_BSS_SIGNAL_MBM]);
+		//printf("signal: %d\n", s);
                 new->bss_signal = s / 100;
         }
 
@@ -293,9 +300,11 @@ int scan_dump_handler(struct nl_msg *msg, void *arg)
                 while (ielen >= 2 && ielen >= ie[1]) {
                         switch (ie[0]) {
                         case 0: /* SSID */
-                                if (len > 0 && len <= 32)
+                                if (len > 0 && len <= 32) {
                                         print_ssid_escaped(new->essid, sizeof(new->essid),
                                                            ie+2, len);
+					//printf("ssid: %s\n", new->essid);
+					}
                                 break;
                         case 11: /* BSS Load */
                                 if (len >= 5) {
@@ -308,20 +317,32 @@ int scan_dump_handler(struct nl_msg *msg, void *arg)
                         ie    += ie[1] + 2;
                 }
         }
-
+	if(!strcmp(new->essid, result->essid) && !foundssid) {
+		memcpy(result, new, sizeof(*result));
+		printf("hurrah!!!, found %s AP\n", new->essid);
+		foundssid = true;
+	}
         return NL_SKIP;
 }
 
-static int iw_nl80211_scan_trigger(void)
+static int iw_nl80211_scan_trigger(const char *ssid)
 {
+//	static struct nlmsg_attribute attr = {
+//		.type = NL80211_ATTR_SCAN_SSIDS,
+//	};
         static struct nl80211_cmd cmd_trigger_scan = {
                 .nlcmd = NL80211_CMD_TRIGGER_SCAN,
         };
+	printf("scan trigger: ssid: %s\n", ssid);
+	//attr.len = strlen(ssid) + 1;
+	//attr.data = ssid;
+	//cmd_trigger_scan.msg_args = &attr;
+	//cmd_trigger_scan.msg_args_len = 1;
 
-        return nl80211cmd_handle(&cmd_trigger_scan);
+	return nl80211cmd_handle(&cmd_trigger_scan);
 }
 
-static int iw_nl80211_get_scan_data(struct scan_result *sr)
+static int iw_nl80211_get_scan_data(struct scan_result *sr, const char *ssid)
 {
         static struct nl80211_cmd cmd_scan_dump = {
                 .nlcmd     = NL80211_CMD_GET_SCAN,
@@ -330,6 +351,9 @@ static int iw_nl80211_get_scan_data(struct scan_result *sr)
         };
 
         memset(sr, 0, sizeof(*sr));
+	strncpy(sr->essid,ssid, sizeof(sr->essid));
+	foundssid = false;
+
         cmd_scan_dump.handler_arg = sr;
 
         return nl80211cmd_handle(&cmd_scan_dump);
@@ -339,14 +363,14 @@ static int get_scanresult(struct wireless_ctx *state, struct scan_result *result
 {
 	int ret;
 
-	ret = iw_nl80211_scan_trigger();
+	ret = iw_nl80211_scan_trigger(state->ssid);
 
 	if( !ret || ret == EBUSY){
 	/* Trigger returns -EBUSY if a scan request is pending or ready. */
 		if (!iw_nl80211_wait_for_scan_events()) {
 			printf("Waiting for scan data...");
 		} else {
-			ret = iw_nl80211_get_scan_data(result);
+			ret = iw_nl80211_get_scan_data(result, state->ssid);
 			if (ret < 0) {
 				fprintf(stderr,"Scan failed on %s: %s", state->ifname, strerror(-ret));
 				return -1;
@@ -373,7 +397,7 @@ static void *wperf_scanthread(void *vstate)
 			exit(1);
 		}
 		msg_enqueue(state, sresult); // FIXME: monitor receiver signal strength indicator
-		usleep(1000000); // trigger the scan for every one sec
+		usleep(1000); // trigger the scan for every one sec
 	}
 	return NULL;
 }
@@ -382,12 +406,30 @@ static void *wperf_reportthread(void *vstate)
 {
 	struct wireless_ctx *state = vstate;
 	struct scan_result sr;
+	int sig_qual_max,sig_qual;
 
 	while(1){
-		msg_dequeue(state, &sr);
-		printf("essid %s\n", sr.essid);
-		printf("signal_qual %d\n", sr.bss_signal_qual);
-		usleep(1000000);
+		if(!msg_dequeue(state, &sr)){
+			printf("essid %s\n", sr.essid);
+			printf("freq: %d KHz\n", sr.freq);
+			printf("chan: %d\n", sr.chan);
+			printf("signal: %d dBm\n", sr.bss_signal); //signal level
+		        if (sr.bss_signal_qual) {
+				/* BSS_SIGNAL_UNSPEC is scaled 0..100 */
+				sig_qual     = sr.bss_signal_qual;
+				sig_qual_max = 100;
+			} else if (sr.bss_signal) {
+				if (sr.bss_signal < -110)
+					sig_qual = 0;
+				else if (sr.bss_signal > -40)
+					sig_qual = 70;
+				else
+					sig_qual = sr.bss_signal + 110;
+				sig_qual_max = 70;
+			}
+			printf("signal_qual %d/%d\n", sig_qual,sig_qual_max);
+		}
+		usleep(5000000); //run this thread every 5 sec
 	}
 
 	return NULL;
