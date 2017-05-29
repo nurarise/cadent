@@ -10,4 +10,4 @@ dead spot at home.*
 
 **Usage**
 
-".out/cadent-wifi -i <interface name> -s <ssid>"
+*.out/cadent-wifi -i "ifname" -s "ssid"*
