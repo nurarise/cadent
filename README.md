@@ -10,4 +10,4 @@ dead spot at home.*
 
 **Usage**
 
-*sudo .out/cadent-wifi -i <interface name> -s <ssid>*
+sudo .out/cadent-wifi -i <interface name> -s <ssid>
