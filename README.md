@@ -9,4 +9,5 @@ dead spot at home.*
 * libnl-genl-3.0
 
 **Usage**
+
 *sudo .out/cadent-wifi -i <interface name> -s <ssid>*
